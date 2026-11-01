@@ -1,10 +1,15 @@
 from langchain_community.vectorstores import FAISS
-from app.llm import embedding_model
+
 from pathlib import Path
 from app.rag.loader import load_file
 from app.rag.splitter import text_splitter
 
-VECTORDB_DIR = Path("data/vectordb")
+from app.llm import get_embeddings, EMBEDDING_PROVIDER
+
+VECTORDB_DIR = Path("data/vectordb") / EMBEDDING_PROVIDER
+embedding_model = get_embeddings()
+
+
 
 
 

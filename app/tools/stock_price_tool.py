@@ -12,6 +12,9 @@ def get_stock_prices(symbol:str):
     fetch the latest stock price for a given symbol (e.g. 'AAPL','TSLA')
     using the Alpha Vantage with API key in the URL.
     """
-    url=f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=IBM&apikey={api_key}"
-    r=requests.get(url)
+    r = requests.get(
+    "https://www.alphavantage.co/query",
+    params={"function": "GLOBAL_QUOTE", "symbol": symbol, "apikey": api_key},
+    timeout=10,
+)
     return r.json()

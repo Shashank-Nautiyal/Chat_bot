@@ -1,13 +1,13 @@
-import streamlit as st
-from app.Langgraph_backend import chat_bot
-from app.database import retrieve_all_thread
-from langchain_core.messages import HumanMessage , AIMessage ,ToolMessage
 import uuid
+import streamlit as st
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage 
+from app.Langgraph_backend import chat_bot
+from app.database import retrieve_all_thread, store
+from app.memory import memory_ns
 from app.rag.vector_store import ingest_bytes
 
 # ********* adding css to frontend **** **** ****
-st.set_page_config(page_title="LangGraph Chatbot", page_icon="Chat_bot", layout="wide")
-
+st.set_page_config(page_title="LangGraph Chatbot", page_icon="🤖", layout="wide")
 st.markdown("""
 <style>
 /* primary buttons (New Chat + active chat) */
@@ -45,12 +45,13 @@ def start_new_chat():
     st.session_state["thread_titles"][tid]="New Chat"
     st.session_state["message_history"]=[]
 
-def load_conversation(tid):  
+def load_conversation(tid):
     state = chat_bot.get_state(config={"configurable": {"thread_id": tid}})
-    msgs=state.values.get("messages",[])
+    msgs = state.values.get("messages", [])
     return [
         {"role": "user" if m.type == "human" else "assistant", "content": m.content}
         for m in msgs
+        if m.type in ("human", "ai") and isinstance(m.content, str) and m.content.strip()
     ]
 
 def make_title(text, limit=30):
@@ -66,20 +67,31 @@ def get_title(tid):
         titles[tid] = make_title(first) if first else "New Chat"
     return titles[tid]
 
-#  ****** session state initialization ********
-
-if "chat_threads" not in st.session_state:
-    st.session_state["chat_threads"] = retrieve_all_thread()
-    st.session_state["thread_titles"] = {}
-if "thread_id" not in st.session_state:
-    start_new_chat()
-
-
 
 def switch_thread(tid):
     st.session_state["thread_id"] = tid
     st.session_state["message_history"] = load_conversation(tid)
 
+#************** who is user *****************
+
+st.sidebar.title("💬 LangGraph Chatbot")
+name = st.sidebar.text_input("Your name", value=st.query_params.get("user", ""))
+if not name.strip():
+    st.info("Enter your name in the sidebar to start.")
+    st.stop()
+
+USER_ID = name.strip().lower()
+st.query_params["user"] = USER_ID
+
+
+#  ****** session state initialization ********
+
+if st.session_state.get("active_user") != USER_ID:
+    st.session_state["active_user"] = USER_ID
+    st.session_state["chat_threads"] = retrieve_all_thread(USER_ID)
+    st.session_state["thread_titles"] = {}
+    st.session_state["message_history"] = []
+    start_new_chat()
 
 
 # *********** input tab**************
@@ -103,7 +115,6 @@ if prompt:
 
 #  *******   sidebar ********
 
-st.sidebar.title("💬 LangGraph Chatbot")
 st.sidebar.button("New Chat", icon="➕", on_click=start_new_chat,
                   use_container_width=True, type="primary")
 
@@ -121,7 +132,7 @@ for tid in reversed(st.session_state["chat_threads"]):
         on_click=switch_thread,
         args=(tid,),
     )
-
+    
 # ****** render_message_history ********
 
 for message in st.session_state["message_history"]:
@@ -129,16 +140,12 @@ for message in st.session_state["message_history"]:
         st.markdown(message["content"])
 
 
-# ***** calling langGraph backend to get llm response *****
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage  # top of file
-
-# ... at the bottom, replacing the old `if user_input:` block ...
-
+# ***** handling new chat calling langGraph backend to get llm response *****
+ 
 if prompt:
     thread_id = st.session_state["thread_id"]
 
     #  index attached files into this chat's vector store
-
     for f in uploaded_files:
         with st.spinner(f"Indexing {f.name}..."):
             try:
@@ -151,17 +158,20 @@ if prompt:
             st.markdown(note)
 
     #  send the text to the LLM, if there is any
-    
     if user_input:
         st.session_state["message_history"].append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
 
         config = {
-            "configurable": {"thread_id": thread_id},
-            "metadata": {"thread_id": thread_id},
-            "run_name": "chat_turn",
-        }
+    "configurable": {
+        "thread_id": thread_id,
+        "user_id": USER_ID,
+        "use_memory": st.session_state.get("use_memory", True),
+    },
+    "metadata": {"thread_id": thread_id, "user_id": USER_ID},
+    "run_name": "chat_turn",
+}
 
         with st.chat_message("assistant"):
             status_holder = {"box": None}
@@ -182,17 +192,30 @@ if prompt:
                             status_holder["box"].update(label=label, state="running", expanded=True)
 
                     # stream only assistant text (skip empty tool-call chunks)
-                    if isinstance(message_chunk, AIMessage) and message_chunk.content:
+                    if (isinstance(message_chunk, AIMessage) and message_chunk.content
+                            and metadata.get("langgraph_node") == "chat_node"):
                         yield message_chunk.content
-
             ai_message = st.write_stream(ai_only_stream())
 
             if status_holder["box"] is not None:
                 status_holder["box"].update(label="✅ Tool finished", state="complete", expanded=False)
 
         st.session_state["message_history"].append({"role": "assistant", "content": ai_message})
+   
     
+#*********memory pannel ***********
 
-
+with st.sidebar.expander("🧠 Memory"):
+    st.toggle("Use long-term memory", value=True, key="use_memory")
+    mem_ns = memory_ns({"configurable": {"user_id": USER_ID}})
+    items = store.search(mem_ns, limit=50)
+    if not items:
+        st.caption("No memories yet.")
+    for it in items:
+        c1, c2 = st.columns([5, 1])
+        c1.write(it.value.get("data", ""))
+        if c2.button("🗑", key=f"del_{it.key}"):
+            store.delete(mem_ns, it.key)
+            st.rerun()
 
 
